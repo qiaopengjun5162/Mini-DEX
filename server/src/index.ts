@@ -61,6 +61,7 @@ const routes = createRoutes({
   ws: {
     broadcast: (t, d) => hub?.broadcast(t, d),
     sendBalance: (a, d) => hub?.sendBalance(a, d),
+    sendOrder: (a, d) => hub?.sendOrder(a, d),
   },
 });
 app.route("/", routes.app);

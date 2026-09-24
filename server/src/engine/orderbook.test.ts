@@ -142,4 +142,75 @@ describe("OrderBook", () => {
     expect(ob.ordersOf("a").map((o) => o.price).sort((a, b) => (a < b ? -1 : 1))).toEqual([F("90"), F("110")]);
     expect(ob.ordersOf("b")).toHaveLength(1);
   });
+
+  it("拒绝 self-trade：自己吃自己的单不成交", () => {
+    const ob = new OrderBook();
+    ob.submit(limit("alice", "sell", "100", "1"));
+    ob.submit(limit("alice", "sell", "101", "1"));
+    const r = ob.submit(market("alice", "buy", "2")); // alice 试图自成交
+    expect(r.fills).toHaveLength(0);               // 无成交
+    expect(r.resting).toBeNull();                    // market 单不挂
+    expect(ob.bestAsk()).toBe(F("100"));             // 单仍在簿上（不删）
+    expect(ob.bestBid()).toBeNull();
+  });
+
+  it("拒绝 self-trade：只跳过自己的单，别人的继续成交", () => {
+    const ob = new OrderBook();
+    ob.submit(limit("alice", "sell", "100", "1"));   // alice 的卖单
+    ob.submit(limit("bob", "sell", "100", "2"));     // bob 的卖单
+    const r = ob.submit(market("alice", "buy", "1")); // alice 买
+    expect(r.fills).toHaveLength(1);                  // 只和 bob 成交
+    expect(r.fills[0]!.maker).toBe("bob");
+    expect(r.fills[0]!.qty).toBe(F("1"));
+    expect(ob.bestAsk()).toBe(F("100"));               // alice 的卖单还在
+  });
+
+  it("IOC：能成交的部分成交，剩余不挂单", () => {
+    const ob = new OrderBook();
+    ob.submit(limit("alice", "sell", "100", "1"));
+    ob.submit(limit("bob", "sell", "101", "1"));
+    const r = ob.submit(order("taker", "buy", "ioc", "100", "0.5")); // 出价 100，只要 0.5
+    expect(r.fills).toHaveLength(1);
+    expect(r.fills[0]!.qty).toBe(F("0.5"));
+    expect(r.fills[0]!.maker).toBe("alice");
+    expect(r.resting).toBeNull();
+    expect(ob.bestAsk()).toBe(F("100")); // alice 还有 0.5 在簿上
+  });
+
+  it("IOC：空簿直接丢弃，不挂单", () => {
+    const ob = new OrderBook();
+    const r = ob.submit(order("taker", "buy", "ioc", "100", "1"));
+    expect(r.fills).toHaveLength(0);
+    expect(r.resting).toBeNull();
+  });
+
+  it("FOK：流动性充足则全部成交", () => {
+    const ob = new OrderBook();
+    ob.submit(limit("alice", "sell", "100", "2"));
+    ob.submit(limit("bob", "sell", "101", "1"));
+    const r = ob.submit(order("taker", "buy", "fok", "102", "2")); // 出价 102，吃 2
+    expect(r.fills.map((f) => f.maker)).toEqual(["alice"]);
+    expect(r.fills[0]!.qty).toBe(F("2"));
+    expect(r.resting).toBeNull();
+  });
+
+  it("FOK：流动性不足则全部丢弃", () => {
+    const ob = new OrderBook();
+    ob.submit(limit("alice", "sell", "100", "1")); // 只有 1
+    const r = ob.submit(order("taker", "buy", "fok", "101", "2")); // 要 2，不够
+    expect(r.fills).toHaveLength(0);
+    expect(r.resting).toBeNull();
+    expect(ob.bestAsk()).toBe(F("100")); // alice 的单还在
+  });
+
+  it("FOK：吃穿多档够量则全部成交", () => {
+    const ob = new OrderBook();
+    ob.submit(limit("alice", "sell", "100", "1"));
+    ob.submit(limit("bob", "sell", "101", "1"));
+    ob.submit(limit("carol", "sell", "102", "2"));
+    const r = ob.submit(order("taker", "buy", "fok", "105", "3")); // 吃 3 档共 4，够
+    expect(r.fills).toHaveLength(3);
+    expect(r.fills.reduce((s, f) => s + f.qty, 0n)).toBe(F("3"));
+    expect(r.resting).toBeNull();
+  });
 });

@@ -4,7 +4,7 @@
 // 初学者能读懂 > 极致性能；生产引擎（如 Primit 的 Rust 引擎）会用更高效的结构。
 
 export type Side = "buy" | "sell";
-export type OrderType = "limit" | "market";
+export type OrderType = "limit" | "market" | "ioc" | "fok";
 
 export interface Order {
   id: string;
@@ -43,16 +43,39 @@ export class OrderBook {
   private byId = new Map<string, Order>();
   private seq = 0;
 
-  /** 提交订单：先吃对手盘，limit 剩余挂单，market 剩余丢弃 */
+  /** 检查某个数量的订单能否被对手盘完全吃掉（FOK 用） */
+  canFill(side: Side, qty: bigint): boolean {
+    const opposite = this.sideOf(side === "buy" ? "sell" : "buy");
+    let left = qty;
+    for (const price of opposite.prices) {
+      const level = opposite.book.get(price)!;
+      for (const o of level.orders) {
+        left -= o.remaining;
+        if (left <= 0n) return true;
+      }
+    }
+    return false;
+  }
+
+  /** 提交订单：先吃对手盘，limit 剩余挂单，market/ioc 剩余丢弃，fok 不能全吃则丢弃 */
   submit(input: Omit<Order, "remaining" | "seq" | "ts"> & Partial<Pick<Order, "ts">>): { fills: Fill[]; resting: Order | null } {
     const order: Order = { ...input, remaining: input.qty, seq: ++this.seq, ts: input.ts ?? Date.now() };
+
+    // FOK：先检查能否全部成交，不能就原样返回
+    if (order.type === "fok") {
+      if (!this.canFill(order.side, order.qty)) {
+        return { fills: [], resting: null };
+      }
+    }
+
     const fills = this.match(order);
 
+    // IOC / FOK / market：剩余部分不挂单
     if (order.type === "limit" && order.remaining > 0n) {
       this.rest(order);
       return { fills, resting: order };
     }
-    return { fills, resting: null }; // market 单不挂；或者 limit 单已全部成交
+    return { fills, resting: null };
   }
 
   /** 撤单：只能撤自己的；返回被撤的订单（找不到返回 null） */
@@ -102,13 +125,19 @@ export class OrderBook {
 
     while (taker.remaining > 0n && opposite.prices.length > 0) {
       const bestPrice = opposite.prices[0]!;
-      // limit 单只在价格能对上时成交；market 单不看价
-      if (taker.type === "limit" && !this.crosses(taker.side, taker.price, bestPrice)) break;
+      // limit/IOC/FOK 只在价格能对上时成交；market 单不看价
+      if (taker.type !== "market" && !this.crosses(taker.side, taker.price, bestPrice)) break;
 
       const level = opposite.book.get(bestPrice)!;
+      // 整档全是自己的单 → 这档没东西能吃，跳出撮合
+      if (level.orders.every((o) => o.owner === taker.owner)) break;
       while (taker.remaining > 0n && level.orders.length > 0) {
         const maker = level.orders[0]!;
-        // TODO 生产环境需要 self-trade prevention（自成交会刷量，这里为了简单允许）
+        // Self-trade prevention: 跳过自己的单（轮转到尾部，别人的单还能吃）
+        if (taker.owner === maker.owner) {
+          level.orders.push(level.orders.shift()!);
+          continue;
+        }
         const qty = taker.remaining < maker.remaining ? taker.remaining : maker.remaining;
         taker.remaining -= qty;
         maker.remaining -= qty;

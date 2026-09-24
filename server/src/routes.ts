@@ -144,6 +144,11 @@ export function createRoutes(d: RoutesDeps) {
     for (const maker of new Set(fills.map((f) => f.maker))) if (maker !== owner) pushBalance(maker);
 
     const order: Order = resting ?? { id, owner, side, type, price, qty, remaining: qty - fills.reduce((s, f) => s + f.qty, 0n), ts: fills[0]?.ts ?? Date.now(), seq: 0 };
+    ws.sendOrder(owner, fmtOrder(order));
+    for (const f of fills) {
+      ws.sendOrder(f.maker, { ...fmtFill(f), status: "filled" });
+    }
+
     return { order, fills };
   }
 
@@ -154,6 +159,7 @@ export function createRoutes(d: RoutesDeps) {
     releaseLock(order.id, owner, order.side);
     if (opts.broadcastBook !== false) broadcastBook();
     pushBalance(owner);
+    ws.sendOrder(owner, { ...fmtOrder(order), status: "cancelled" });
     return order;
   }
 
@@ -184,7 +190,7 @@ export function createRoutes(d: RoutesDeps) {
     const body = await c.req.json<{ side?: string; type?: string; price?: string; qty?: string }>().catch(() => ({}) as Record<string, string>);
     const { side, type } = body;
     if (side !== "buy" && side !== "sell") return c.json({ error: "side 必须是 buy / sell" }, 400);
-    if (type !== "limit" && type !== "market") return c.json({ error: "type 必须是 limit / market" }, 400);
+    if (type !== "limit" && type !== "market" && type !== "ioc" && type !== "fok") return c.json({ error: "type 必须是 limit / market / ioc / fok" }, 400);
 
     let qty: bigint, price = 0n;
     try {

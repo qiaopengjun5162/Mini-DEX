@@ -7,6 +7,7 @@ import type { Server } from "node:http";
 export interface WsHub {
   broadcast(type: "orderbook" | "trade", data: unknown): void;
   sendBalance(address: string, data: unknown): void;
+  sendOrder(address: string, data: unknown): void;
 }
 
 export function createWs(opts: {
@@ -43,6 +44,11 @@ export function createWs(opts: {
     sendBalance(address, data) {
       for (const [ws, addr] of authed) {
         if (addr === address) send(ws, { type: "balance", address, data });
+      }
+    },
+    sendOrder(address, data) {
+      for (const [ws, addr] of authed) {
+        if (addr === address) send(ws, { type: "order", address, data });
       }
     },
   };

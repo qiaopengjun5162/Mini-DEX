@@ -32,6 +32,13 @@ contract Vault is EIP712, Ownable, ReentrancyGuard {
     /// @notice 链上记账：user => token => 累计充值 - 累计提现。仅供展示/对账，不是提现的依据。
     mapping(address => mapping(address => uint256)) public balances;
 
+    /// @notice 链上硬上限：user => token => 最大链上余额（含充值 - 提现）
+    /// @dev owner 可以随时调整，这是防单用户异常充值的保险阀，不是反篡改壁垒。
+    mapping(address => mapping(address => uint256)) public hardCaps;
+
+    /// @notice 全局默认硬上限（每个 token 最大接受总量，0 = 不限）
+    mapping(address => uint256) public tokenHardCaps;
+
     /// @notice 已用过的提现 nonce，防止同一条授权被重复使用（重放攻击）
     mapping(uint256 => bool) public usedNonces;
 
@@ -60,6 +67,16 @@ contract Vault is EIP712, Ownable, ReentrancyGuard {
         allowedTokens[token] = allowed;
     }
 
+    /// @notice 设置某个用户的链上硬上限（代币级别；0 = 不限）
+    function setHardCap(address user, address token, uint256 cap) external onlyOwner {
+        hardCaps[user][token] = cap;
+    }
+
+    /// @notice 设置全局 token 总量上限（0 = 不限）
+    function setTokenHardCap(address token, uint256 cap) external onlyOwner {
+        tokenHardCaps[token] = cap;
+    }
+
     // ------------------------------------------------------------------
     // 用户
     // ------------------------------------------------------------------
@@ -70,8 +87,16 @@ contract Vault is EIP712, Ownable, ReentrancyGuard {
         require(allowedTokens[token], "Vault: token not allowed");
         require(amount > 0, "Vault: amount is zero");
 
+        uint256 newBal = balances[msg.sender][token] + amount;
+        // 用户个人硬上限
+        uint256 userCap = hardCaps[msg.sender][token];
+        if (userCap > 0) require(newBal <= userCap, "Vault: user hardcap exceeded");
+        // token 全局总量上限
+        uint256 tokenCap = tokenHardCaps[token];
+        if (tokenCap > 0) require(IERC20(token).balanceOf(address(this)) + amount <= tokenCap, "Vault: token hardcap exceeded");
+
         IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
-        balances[msg.sender][token] += amount;
+        balances[msg.sender][token] = newBal;
 
         emit Deposit(msg.sender, token, amount);
     }
